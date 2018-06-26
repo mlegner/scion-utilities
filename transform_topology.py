@@ -154,16 +154,16 @@ class ASTopology(Topology):
             t.keys['core'] = base64.b64decode(read_file(os.path.join(p, 'core-sig.seed')))
         t.keys['sign'] = base64.b64decode(read_file(os.path.join(p, 'as-sig.seed')))
         t.keys['decrypt'] = base64.b64decode(read_file(os.path.join(p, 'as-decrypt.key')))
-        t.certs = {}
         p = os.path.join(os.path.dirname(topo_file), 'certs')
         contents = glob.glob(os.path.join(p, '*.crt'))
         if len(contents) != 1:
             raise Exception('Wrong number of entries in %s for *crt: Expect 1 but got %d' % (p, len(contents)))
         contents = read_file(contents[0])
-        t.certs['as'] = json.loads(contents)
-        if len(t.certs['as']) != 2:
-            print(t.certs['as'])
-            raise Exception('Certificates must contain a chain of 2 elements; this one has %d elements' % len(t.certs['as']) )
+        certs = json.loads(contents)
+        if len(certs) != 2:
+            print(certs)
+            raise Exception('Certificates must contain a chain of 2 elements; this one has %d elements' % len(certs) )
+        t.certs = {'as': certs['0'], 'core': certs['1']}
         return t
 
     def get_keys(self):
@@ -182,8 +182,7 @@ class ASTopology(Topology):
         if not self.is_core_as:
             return
         sign_priv = self.get_keys()['online']
-        cert = self.certs['as']
-        c = Certificate(cert['1'])
+        c = Certificate(self.certs['core'])
         setattr(c, Certificate.FIELDS_MAP[SUBJECT_STRING][0], self.ia_str())
         setattr(c, Certificate.FIELDS_MAP[ISSUER_STRING][0], self.ia_str())
         c.sign(sign_priv) # self signed
@@ -193,8 +192,7 @@ class ASTopology(Topology):
         issuer = list(core_ases.values())[0]
         sign_priv = issuer.keys['core']
         print(sign_priv)
-        cert = self.certs['as']
-        c = Certificate(cert['1'])
+        c = Certificate(self.certs['as'])
         print('-------------------------------------')
         print(c)
         setattr(c, Certificate.FIELDS_MAP[SUBJECT_STRING][0], self.ia_str())
@@ -202,6 +200,7 @@ class ASTopology(Topology):
         c.sign(sign_priv)
         print('^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^')
         print(c)
+        self.certs['as'] = c
 
 class ISD(object):
     def __init__(self, isdId = None):
