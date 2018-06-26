@@ -18,10 +18,30 @@ import os
 import glob
 import json
 import functools
+import base64
 
+from lib.util import (
+    load_json_file,
+    read_file
+)
 from lib.packet.scion_addr import ISD_AS
 from lib.topology import Topology
 from lib.defines import SERVICE_TYPES
+from lib.crypto.certificate import (Certificate, 
+    SUBJECT_STRING,
+    ISSUER_STRING,
+    TRC_VERSION_STRING,
+    VERSION_STRING,
+    COMMENT_STRING,
+    CAN_ISSUE_STRING,
+    ISSUING_TIME_STRING,
+    EXPIRATION_TIME_STRING,
+    ENC_ALGORITHM_STRING,
+    SUBJECT_ENC_KEY_STRING,
+    SIGN_ALGORITHM_STRING,
+    SUBJECT_SIG_KEY_STRING,
+    SIGNATURE_STRING,
+)
 
 
 ScionLabInfrastructureASOffsetAddr=0xFFAA00000000
@@ -89,6 +109,47 @@ def rename_key_everywhere(topo_thing, old_keyname, new_keyname):
             rename_key_everywhere(it, old_keyname, new_keyname)
 
 
+
+# -------------------------------- Topology classes
+
+class ASTopology(Topology):
+    @classmethod
+    def from_file(cls, topo_file):
+        topo_dict = load_json_file(topo_file)
+        rename_key_everywhere(topo_dict, 'LinkType', 'LinkTo')
+        t = cls.from_dict(topo_dict)
+        # now keys:
+        t.keys = {}
+        p = os.path.join(os.path.dirname(topo_file), 'keys')
+        if t.is_core_as:
+            t.keys['online'] = base64.b64decode(read_file(os.path.join(p, 'online-root.seed')))
+            t.keys['offline'] = read_file(os.path.join(p, 'offline-root.seed'))
+            t.keys['core'] = read_file(os.path.join(p, 'core-sig.seed'))
+        t.keys['sign'] = read_file(os.path.join(p, 'as-sig.seed'))
+        t.keys['decrypt'] = read_file(os.path.join(p, 'as-decrypt.key'))
+        t.certs = {}
+        p = os.path.join(os.path.dirname(topo_file), 'certs')
+        contents = glob.glob(os.path.join(p, '*.crt'))
+        if len(contents) != 1:
+            raise Exception('Wrong number of entries in %s for *crt: Expect 1 but got %d' % (p, len(contents)))
+        contents = read_file(contents[0])
+        t.certs['as'] = json.loads(contents)
+        if len(t.certs['as']) != 2:
+            print(t.certs['as'])
+            raise Exception('Certificates must contain a chain of 2 elements; this one has %d elements' % len(t.certs['as']) )
+        return t
+
+    def get_keys(self):
+        return self.keys
+
+    def ia_str(self):
+        return str(self.isd_as)
+
+class ISD(object):
+    def __init__(self):
+        self._internal = {}
+        self._isd = None
+
 class FullTopo:
     """
     Class manipulating one or more whole SCIONLab ISDs certs, topos, etc.
@@ -101,19 +162,24 @@ class FullTopo:
         for isd_path in contents:
             isd = os.path.basename(isd_path)[3:]
             isd = int(isd)
-            self._isds[isd] = self.get_isd_from_path(isd_path)
+            self._isds[isd] = self.load_isd_from_path(isd_path)
     
     @classmethod
-    def get_isd_from_path(cls, isd_path):
+    def load_isd_from_path(cls, isd_path):
         contents = glob.glob(os.path.join(isd_path, 'AS*'))
         isd = {}
+        core_ases = []
         for as_path in contents:
             AS = os.path.basename(as_path)[2:]
-            isd[AS] = cls.get_as_from_path(as_path)
+            a = cls.load_as_from_path(as_path)
+            if a.is_core_as:
+                core_ases.append(a)
+            isd[AS] = a
+        # isd['core_ases'] = core_ases
         return isd
 
     @classmethod
-    def get_as_from_path(cls, as_path):
+    def load_as_from_path(cls, as_path):
         # print(as_path)
         contents = glob.glob(os.path.join(as_path, 'cs*'))
         if len(contents) != 1:
@@ -122,16 +188,7 @@ class FullTopo:
         contents = glob.glob(topo_file)
         if len(contents) != 1:
             raise Exception('Expected to find 1 topology.json file in %s but found %d' % (topo_file, len(contents)))
-        with open(topo_file) as f:
-            topo_dict = dict(json.load(f))
-        # rename_key_everywhere(topo_dict, 'Core', 'NNNNNN')
-        rename_key_everywhere(topo_dict, 'LinkType', 'LinkTo')
-        try:
-            t = Topology.from_dict(topo_dict)
-        except Exception:
-            print('Exception parsing topology for path %s' % topo_file)
-            raise
-        return t
+        return ASTopology.from_file(topo_file)
 
     def remap_all(self):
         for k, v in self._isds.items():
@@ -144,6 +201,8 @@ class FullTopo:
             print('mapping ', AS)
             cls.remap_topology(topo)
         # regenerate core AS certs
+        for AS, topo in ases.items():
+            cls.reissue_cert(topo)
         # regenerate TRC
         # regenerate non core AS certs
         return ases
@@ -165,7 +224,31 @@ class FullTopo:
         first = first[:2]
         newid = map_id(middle)
         return '%s%s-%s' %(first, newid.file_fmt(), last)
-    
+
+    @classmethod
+    def reissue_cert(cls, topo):
+        # print(topo.certs['as'])
+        if topo.is_core_as:
+            sign_priv = topo.get_keys()['online']
+            cert = topo.certs['as']
+            # c = cert['1']
+            # c = Certificate.from_values(
+            #     topo.ia_str(), 
+            #     topo.ia_str(), 
+            #     c[TRC_VERSION_STRING],
+            #     c[VERSION_STRING],
+            #     c[COMMENT_STRING],
+            #     c[CAN_ISSUE_STRING],
+            #     c[EXPIRATION_TIME_STRING]
+            # )
+            c = Certificate(cert['1'])
+            print('-------------------------------------')
+            print(c)
+            setattr(c, Certificate.FIELDS_MAP[SUBJECT_STRING][0], topo.ia_str())
+            setattr(c, Certificate.FIELDS_MAP[ISSUER_STRING][0], topo.ia_str())
+            c.sign(sign_priv)
+            print('^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^')
+            print(c)
 
 
 def test_preconditions():
@@ -177,7 +260,6 @@ def test_preconditions():
     do_test('1-102',  '17-ffaa:0:110c')
     do_test('42-1',   '16-ffaa:0:1001')
     do_test('20-201', '60-ffaa:0:3c01')
-    
 
 def main():
     test_preconditions()
