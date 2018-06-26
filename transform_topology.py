@@ -190,25 +190,15 @@ class ASTopology(Topology):
         self.certs['core'] = c
         
     def reissue_cert(self, core_ases):
-        sign_priv = list(core_ases.values())[0].keys['core']
+        issuer = list(core_ases.values())[0]
+        sign_priv = issuer.keys['core']
         print(sign_priv)
-        # sign_priv = self.keys['online']
         cert = self.certs['as']
-        # c = cert['1']
-        # c = Certificate.from_values(
-        #     topo.ia_str(), 
-        #     topo.ia_str(), 
-        #     c[TRC_VERSION_STRING],
-        #     c[VERSION_STRING],
-        #     c[COMMENT_STRING],
-        #     c[CAN_ISSUE_STRING],
-        #     c[EXPIRATION_TIME_STRING]
-        # )
         c = Certificate(cert['1'])
         print('-------------------------------------')
         print(c)
         setattr(c, Certificate.FIELDS_MAP[SUBJECT_STRING][0], self.ia_str())
-        setattr(c, Certificate.FIELDS_MAP[ISSUER_STRING][0], self.ia_str())
+        setattr(c, Certificate.FIELDS_MAP[ISSUER_STRING][0], issuer.ia_str())
         c.sign(sign_priv)
         print('^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^')
         print(c)
