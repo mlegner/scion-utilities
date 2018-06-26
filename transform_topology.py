@@ -110,6 +110,22 @@ def rename_key_everywhere(topo_thing, old_keyname, new_keyname):
 
 
 
+def remap_topology(topo):
+    topo.isd_as = map_id(str(topo.isd_as))
+    for serv in (*topo.beacon_servers, *topo.certificate_servers, *topo.path_servers, *topo.sibra_servers, *topo.border_routers):
+        serv.name = remap_service_name(serv.name)
+    # BRs contain references to other IAs
+    for br in topo.border_routers:
+        for k, v in br.interfaces.items():
+            v.isd_as = map_id(str(v.isd_as))
+
+def remap_service_name(serv_name):
+    first, middle, last = serv_name.split('-')
+    middle = first[2:] + '-' + middle
+    first = first[:2]
+    newid = map_id(middle)
+    return '%s%s-%s' %(first, newid.file_fmt(), last)
+
 # -------------------------------- Topology classes
 
 class ASTopology(Topology):
@@ -134,10 +150,10 @@ class ASTopology(Topology):
         p = os.path.join(os.path.dirname(topo_file), 'keys')
         if t.is_core_as:
             t.keys['online'] = base64.b64decode(read_file(os.path.join(p, 'online-root.seed')))
-            t.keys['offline'] = read_file(os.path.join(p, 'offline-root.seed'))
-            t.keys['core'] = read_file(os.path.join(p, 'core-sig.seed'))
-        t.keys['sign'] = read_file(os.path.join(p, 'as-sig.seed'))
-        t.keys['decrypt'] = read_file(os.path.join(p, 'as-decrypt.key'))
+            t.keys['offline'] = base64.b64decode(read_file(os.path.join(p, 'offline-root.seed')))
+            t.keys['core'] = base64.b64decode(read_file(os.path.join(p, 'core-sig.seed')))
+        t.keys['sign'] = base64.b64decode(read_file(os.path.join(p, 'as-sig.seed')))
+        t.keys['decrypt'] = base64.b64decode(read_file(os.path.join(p, 'as-decrypt.key')))
         t.certs = {}
         p = os.path.join(os.path.dirname(topo_file), 'certs')
         contents = glob.glob(os.path.join(p, '*.crt'))
@@ -155,6 +171,47 @@ class ASTopology(Topology):
 
     def ia_str(self):
         return str(self.isd_as)
+
+    def as_id(self):
+        return self.isd_as[1]
+
+    def remap_topology(self):
+        remap_topology(self)
+
+    def reissue_core_cert(self):
+        if not self.is_core_as:
+            return
+        sign_priv = self.get_keys()['online']
+        cert = self.certs['as']
+        c = Certificate(cert['1'])
+        setattr(c, Certificate.FIELDS_MAP[SUBJECT_STRING][0], self.ia_str())
+        setattr(c, Certificate.FIELDS_MAP[ISSUER_STRING][0], self.ia_str())
+        c.sign(sign_priv) # self signed
+        self.certs['core'] = c
+        
+    def reissue_cert(self, core_ases):
+        sign_priv = list(core_ases.values())[0].keys['core']
+        print(sign_priv)
+        # sign_priv = self.keys['online']
+        cert = self.certs['as']
+        # c = cert['1']
+        # c = Certificate.from_values(
+        #     topo.ia_str(), 
+        #     topo.ia_str(), 
+        #     c[TRC_VERSION_STRING],
+        #     c[VERSION_STRING],
+        #     c[COMMENT_STRING],
+        #     c[CAN_ISSUE_STRING],
+        #     c[EXPIRATION_TIME_STRING]
+        # )
+        c = Certificate(cert['1'])
+        print('-------------------------------------')
+        print(c)
+        setattr(c, Certificate.FIELDS_MAP[SUBJECT_STRING][0], self.ia_str())
+        setattr(c, Certificate.FIELDS_MAP[ISSUER_STRING][0], self.ia_str())
+        c.sign(sign_priv)
+        print('^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^')
+        print(c)
 
 class ISD(object):
     def __init__(self, isdId = None):
@@ -177,9 +234,35 @@ class ISD(object):
         for as_path in contents:
             a = ASTopology.from_directory(as_path)
             if a.is_core_as:
-                isd.core_ases.append(a)
+                isd.core_ases.append(a.as_id())
             isd._internal[a.isd_as[1]] = a
         return isd
+
+    def remap_isd(self):
+        mappings = {}
+        # map topologies
+        for AS, topo in self._internal.items():
+            # print('mapping ', AS)
+            old_id = topo.as_id()
+            # print('OLD:', old_id)
+            topo.remap_topology()
+            mappings[old_id] = topo.as_id()
+            # print('NEW:', topo.as_id())
+        print(mappings)
+        for k, v in mappings.items():
+            self._internal[v] = self._internal.pop(k)
+        self.core_ases = [mappings[x] if x in mappings.keys() else x for x in self.core_ases]
+        core_topos = {k:self._internal[k] for k in self.core_ases}
+        
+        # regenerate core AS certs
+        for _, topo in core_topos.items():
+            topo.reissue_core_cert()
+        
+        # regenerate TRC
+        # TODO
+        # regenerate non core AS certs
+        for AS, topo in self._internal.items():
+            topo.reissue_cert(core_topos)
 
 class FullTopo:
     """
@@ -196,38 +279,41 @@ class FullTopo:
     
     def remap_all(self):
         for k, v in self._isds.items():
-            self._isds[map_ISD(k)] = self.remap_isd(self._isds.pop(k))
+            v.remap_isd()
+            # self._isds[map_ISD(k)] = self.remap_isd(self._isds.pop(k))
+            self._isds.pop(k)
+            self._isds[v.isd_id] = v
 
-    @classmethod
-    def remap_isd(cls, ases):
-        # map topologies
-        for AS, topo in ases.items():
-            print('mapping ', AS)
-            cls.remap_topology(topo)
-        # regenerate core AS certs
-        for AS, topo in ases.items():
-            cls.reissue_cert(topo)
-        # regenerate TRC
-        # regenerate non core AS certs
-        return ases
+    # @classmethod
+    # def remap_isd(cls, ases):
+    #     # map topologies
+    #     for AS, topo in ases.items():
+    #         cls.remap_topology(topo)
+    #         print('mapping ', AS)
+    #     # regenerate core AS certs
+    #     for AS, topo in ases.items():
+    #         cls.reissue_cert(topo)
+    #     # regenerate TRC
+    #     # regenerate non core AS certs
+    #     return ases
 
-    @classmethod
-    def remap_topology(cls, topo):
-        topo.isd_as = map_id(str(topo.isd_as))
-        for serv in (*topo.beacon_servers, *topo.certificate_servers, *topo.path_servers, *topo.sibra_servers, *topo.border_routers):
-            serv.name = cls.remap_service_name(serv.name)
-        # BRs contain references to other IAs
-        for br in topo.border_routers:
-            for k, v in br.interfaces.items():
-                v.isd_as = map_id(str(v.isd_as))
+    # @classmethod
+    # def remap_topology(cls, topo):
+    #     topo.isd_as = map_id(str(topo.isd_as))
+    #     for serv in (*topo.beacon_servers, *topo.certificate_servers, *topo.path_servers, *topo.sibra_servers, *topo.border_routers):
+    #         serv.name = cls.remap_service_name(serv.name)
+    #     # BRs contain references to other IAs
+    #     for br in topo.border_routers:
+    #         for k, v in br.interfaces.items():
+    #             v.isd_as = map_id(str(v.isd_as))
 
-    @classmethod
-    def remap_service_name(cls, serv_name):
-        first, middle, last = serv_name.split('-')
-        middle = first[2:] + '-' + middle
-        first = first[:2]
-        newid = map_id(middle)
-        return '%s%s-%s' %(first, newid.file_fmt(), last)
+    # @classmethod
+    # def remap_service_name(cls, serv_name):
+    #     first, middle, last = serv_name.split('-')
+    #     middle = first[2:] + '-' + middle
+    #     first = first[:2]
+    #     newid = map_id(middle)
+    #     return '%s%s-%s' %(first, newid.file_fmt(), last)
 
     @classmethod
     def reissue_cert(cls, topo):
