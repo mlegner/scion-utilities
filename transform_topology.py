@@ -146,11 +146,10 @@ class FullTopo:
         topo.isd_as = map_id(str(topo.isd_as))
         for serv in (*topo.beacon_servers, *topo.certificate_servers, *topo.path_servers, *topo.sibra_servers, *topo.border_routers):
             serv.name = cls.remap_service_name(serv.name)
-            # print(serv)
         # BRs contain references to other IAs
         for br in topo.border_routers:
-            print(br)
-        # print('done')
+            for k, v in br.interfaces.items():
+                v.isd_as = map_id(str(v.isd_as))
 
     @classmethod
     def remap_service_name(cls, serv_name):
