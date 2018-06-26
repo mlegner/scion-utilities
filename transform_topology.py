@@ -114,6 +114,17 @@ def rename_key_everywhere(topo_thing, old_keyname, new_keyname):
 
 class ASTopology(Topology):
     @classmethod
+    def from_directory(cls, as_path):
+        contents = glob.glob(os.path.join(as_path, 'cs*'))
+        if len(contents) != 1:
+            raise Exception('Expected to find 1 entry cs* in %s but found %d' % (as_path, len(contents)))
+        topo_file = os.path.join(contents[0], 'topology.json')
+        contents = glob.glob(topo_file)
+        if len(contents) != 1:
+            raise Exception('Expected to find 1 topology.json file in %s but found %d' % (topo_file, len(contents)))
+        return cls.from_file(topo_file)
+
+    @classmethod
     def from_file(cls, topo_file):
         topo_dict = load_json_file(topo_file)
         rename_key_everywhere(topo_dict, 'LinkType', 'LinkTo')
@@ -146,9 +157,29 @@ class ASTopology(Topology):
         return str(self.isd_as)
 
 class ISD(object):
-    def __init__(self):
-        self._internal = {}
-        self._isd = None
+    def __init__(self, isdId = None):
+        self._internal = dict()
+        self.isd_id = isdId
+        self.core_ases = []
+    def __getitem__(self, key):
+        return self._internal[key]
+    def __setitem__(self, key, value):
+        self._internal[key] = value
+    def items(self):
+        return self._internal.items()
+
+    @classmethod
+    def load_from_path(cls, isd_path):
+        isdId = os.path.basename(isd_path)[3:]
+        isdId = int(isdId)
+        isd = cls(isdId)
+        contents = glob.glob(os.path.join(isd_path, 'AS*'))
+        for as_path in contents:
+            a = ASTopology.from_directory(as_path)
+            if a.is_core_as:
+                isd.core_ases.append(a)
+            isd._internal[a.isd_as[1]] = a
+        return isd
 
 class FullTopo:
     """
@@ -160,36 +191,9 @@ class FullTopo:
             raise Exception('%s doesn\'t look to be a directory' % gen_dir)
         contents = glob.glob(os.path.join(gen_dir, 'ISD*'))
         for isd_path in contents:
-            isd = os.path.basename(isd_path)[3:]
-            isd = int(isd)
-            self._isds[isd] = self.load_isd_from_path(isd_path)
+            isd = ISD.load_from_path(isd_path)
+            self._isds[isd.isd_id] = isd
     
-    @classmethod
-    def load_isd_from_path(cls, isd_path):
-        contents = glob.glob(os.path.join(isd_path, 'AS*'))
-        isd = {}
-        core_ases = []
-        for as_path in contents:
-            AS = os.path.basename(as_path)[2:]
-            a = cls.load_as_from_path(as_path)
-            if a.is_core_as:
-                core_ases.append(a)
-            isd[AS] = a
-        # isd['core_ases'] = core_ases
-        return isd
-
-    @classmethod
-    def load_as_from_path(cls, as_path):
-        # print(as_path)
-        contents = glob.glob(os.path.join(as_path, 'cs*'))
-        if len(contents) != 1:
-            raise Exception('Expected to find 1 entry cs* in %s but found %d' % (as_path, len(contents)))
-        topo_file = os.path.join(contents[0], 'topology.json')
-        contents = glob.glob(topo_file)
-        if len(contents) != 1:
-            raise Exception('Expected to find 1 topology.json file in %s but found %d' % (topo_file, len(contents)))
-        return ASTopology.from_file(topo_file)
-
     def remap_all(self):
         for k, v in self._isds.items():
             self._isds[map_ISD(k)] = self.remap_isd(self._isds.pop(k))
