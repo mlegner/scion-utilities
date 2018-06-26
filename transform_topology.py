@@ -32,7 +32,12 @@ def isUserAS(ASID):
     return ASID > 1000
 
 def map_ISD(old_isd):
-    return old_isd + 16 if old_isd != 42 else 0
+    if old_isd == 42:
+        return 16
+    elif old_isd >= 20 and old_isd <= 21:
+        return old_isd - 20 + 60
+    else:
+        return old_isd + 16
 
 def map_ASID(old_asid):
     if isUserAS(old_asid):
@@ -50,9 +55,9 @@ def map_id(old_ia):
     :param old_ia ISD_AS is an IA prior to address standardization
     Examples: 
     1-1001  -> 17-ffaa:1:1
-    1-11    -> 17-ffaa:0:0101
-    2-22    -> 18-ffaa:0:0202
-    42-1    -> 16-ffaa:0:0001
+    1-11    -> 17-ffaa:0:1101
+    2-22    -> 18-ffaa:0:1202
+    42-1    -> 16-ffaa:0:1001
     """
     ia = ISD_AS(old_ia)
     I = ia[0]
@@ -60,10 +65,12 @@ def map_id(old_ia):
     userAS = isUserAS(A)
     if not userAS and I != 42:
         A -= I * 10
+        if A > 15:
+            A = 10 + A % 10
     I = map_ISD(I)
     A = map_ASID(A)
-    if not userAS and I != 0:
-        A += (I - 16) * 256
+    if not userAS:
+        A += I * 256
     return ISD_AS.from_values(I, A)
 
 
@@ -161,13 +168,24 @@ class FullTopo:
     
 
 
+def test_preconditions():
+    def do_test(oldvalue, expected):
+        actual = str(map_id(oldvalue))
+        if actual != expected:
+            raise Exception('Mapping IDs failure: %s != %s' % (actual, expected))
+    do_test('1-11',   '17-ffaa:0:1101')
+    do_test('1-102',  '17-ffaa:0:110c')
+    do_test('42-1',   '16-ffaa:0:1001')
+    do_test('20-201', '60-ffaa:0:3c01')
+    
+
 def main():
+    test_preconditions()
     parser = argparse.ArgumentParser()
     parser.add_argument('gen', help='Gen folder to apply the transformation')
     parser.add_argument('-d', '--dry', help='Dry run. Don\'t make changes')
     args = parser.parse_args()
-    # print(map_id('20-201'))
-    # print(map_id('42-8'))
+    
     ft = FullTopo(args.gen)
     ft.remap_all()
 
