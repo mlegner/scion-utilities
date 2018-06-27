@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 # Copyright 2018 ETH Zurich
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,7 +16,7 @@
 
 # Stdlib
 import argparse
-from peewee import MySQLDatabase
+from peewee import MySQLDatabase, SqliteDatabase
 
 # SCION
 from lib.packet.scion_addr import ISD_AS
@@ -38,8 +39,8 @@ def transform_coord(args):
     dry_execute_query("ALTER TABLE scion_lab_as MODIFY as_id BIGINT UNSIGNED;")
     dry_execute_query("ALTER TABLE isd_location MODIFY isd SMALLINT UNSIGNED;")
 
-    print("\nUpdating table scion_lab_as:")
-    as_rows = DB.execute_sql("SELECT id, isd, as_id FROM scion_lab_as;")
+    print("\nUpdating infrastructure ASes in scion_lab_as:")
+    as_rows = DB.execute_sql("SELECT id, isd, as_id FROM scion_lab_as WHERE type = 0;")
     for row in as_rows:
         old_isd_as = ISD_AS.from_values(row[1], row[2])
         new_isd_as = map_id(old_isd_as)
@@ -58,13 +59,67 @@ def transform_coord(args):
 
 
 def transform_web(args):
-    print("Updating scion-web is not yet implemented.")
+    print("Updating ASes in ad_manager_ad:")
+    as_rows = DB.execute_sql("SELECT id, isd_id, as_id FROM ad_manager_ad;").fetchall()
+    for row in as_rows:
+        isd_as = map_id(ISD_AS.from_values(row[1], row[2]))
+        dry_execute_query(
+            "UPDATE ad_manager_ad SET isd_id = {}, as_id = {}, as_id_str = '{}' "
+            "WHERE id = {};".format(isd_as[0], isd_as[1], isd_as.as_str(), row[0]))
+
+    print("\nUpdating border routers:")
+    br_rows = DB.execute_sql("SELECT id, `name` FROM ad_manager_borderrouter;").fetchall()
+    for row in br_rows:
+        ids = row[1][2:].split('-')
+        if ids[0] == "0":
+            dry_execute_query("DELETE FROM ad_manager_borderrouter WHERE id = {};".format(row[0]))
+            dry_execute_query("DELETE FROM ad_manager_borderrouteraddress "
+                              "WHERE router_id = {};".format(row[0]))
+            dry_execute_query("DELETE FROM ad_manager_borderrouterinterface "
+                              "WHERE id = {};".format(row[0]))
+            continue
+        isd_as = map_id(ISD_AS.from_values(int(ids[0]), int(ids[1])))
+        new_name = "br{}-{}".format(isd_as.file_fmt(), ids[2])
+        dry_execute_query(
+            "UPDATE ad_manager_borderrouter SET `name` = '{}' WHERE id = {};".format(
+                new_name, row[0]))
+
+    br_rows = DB.execute_sql("SELECT id, neighbor_isd_id, neighbor_as_id "
+                             "FROM ad_manager_borderrouterinterface;").fetchall()
+    for row in br_rows:
+        isd_as = map_id(ISD_AS.from_values(row[1], row[2]))
+        dry_execute_query(
+            "UPDATE ad_manager_borderrouterinterface SET neighbor_isd_id = {}, "
+            "neighbor_as_id = {}, neighbor_as_id_str = '{}' WHERE id = {};".format(
+                isd_as[0], isd_as[1], isd_as.as_str(), row[0]))
+
+    print("\nUpdating services:")
+    rows = DB.execute_sql("SELECT id, `name` FROM ad_manager_service;").fetchall()
+    for row in rows:
+        service = row[1][:2]
+        ids = row[1][2:].split('-')
+        if ids[0] == "0":
+            dry_execute_query("DELETE FROM ad_manager_service WHERE id = {};".format(row[0]))
+            continue
+        isd_as = map_id(ISD_AS.from_values(int(ids[0]), int(ids[1])))
+        new_name = "{}{}-{}".format(service, isd_as.file_fmt(), ids[2])
+        dry_execute_query(
+            "UPDATE ad_manager_service SET `name` = '{}' WHERE id = {};".format(
+                new_name, row[0]))
+
+    print("\nUpdating ISDs in ad_manager_isd:")
+    isd_rows = DB.execute_sql("SELECT id FROM ad_manager_isd;").fetchall()
+    for row in isd_rows:
+        dry_execute_query("DELETE FROM ad_manager_isd WHERE id = {};".format(row[0]))
+    for row in isd_rows:
+        dry_execute_query("INSERT INTO ad_manager_isd VALUES({});".format(map_ISD(row[0])))
+
     return
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-a', '--address', help="database address", required=True)
+    parser.add_argument('-a', '--address', help="database address", default='localhost')
     parser.add_argument('--port', help="database port", type=int, default=3306)
     parser.add_argument('-d', '--database', help="database name", required=True)
     parser.add_argument('-u', '--user', help="database user", default="root")
@@ -75,8 +130,11 @@ def main():
     args = parser.parse_args()
 
     global DB
-    DB = MySQLDatabase(args.database, user=args.user, passwd=args.password,
-                       host=args.address, port=args.port)
+    if args.web:
+        DB = SqliteDatabase(args.database)
+    else:
+        DB = MySQLDatabase(args.database, user=args.user, passwd=args.password,
+                           host=args.address, port=args.port)
     global DRY
     DRY = args.dry
 
