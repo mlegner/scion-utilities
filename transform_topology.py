@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-# Copyright 2014 ETH Zurich
+# Copyright 2018 ETH Zurich
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -79,9 +79,8 @@ def map_id(old_ia):
     2-22    -> 18-ffaa:0:1202
     42-1    -> 16-ffaa:0:1001
     """
-    ia = ISD_AS(old_ia)
-    I = ia[0]
-    A = ia[1]
+    I = old_ia[0]
+    A = old_ia[1]
     userAS = isUserAS(A)
     if not userAS and I != 42:
         A -= I * 10
@@ -92,6 +91,10 @@ def map_id(old_ia):
     if not userAS:
         A += I * 256
     return ISD_AS.from_values(I, A)
+
+
+def map_id_string(old_ia_string):
+    return map_id(ISD_AS(old_ia_string))
 
 
 def rename_key_everywhere(topo_thing, old_keyname, new_keyname):
@@ -109,21 +112,21 @@ def rename_key_everywhere(topo_thing, old_keyname, new_keyname):
             rename_key_everywhere(it, old_keyname, new_keyname)
 
 
-
 def remap_topology(topo):
-    topo.isd_as = map_id(str(topo.isd_as))
+    topo.isd_as = map_id_string(str(topo.isd_as))
     for serv in (*topo.beacon_servers, *topo.certificate_servers, *topo.path_servers, *topo.sibra_servers, *topo.border_routers):
         serv.name = remap_service_name(serv.name)
     # BRs contain references to other IAs
     for br in topo.border_routers:
         for k, v in br.interfaces.items():
-            v.isd_as = map_id(str(v.isd_as))
+            v.isd_as = map_id_string(str(v.isd_as))
+
 
 def remap_service_name(serv_name):
     first, middle, last = serv_name.split('-')
     middle = first[2:] + '-' + middle
     first = first[:2]
-    newid = map_id(middle)
+    newid = map_id_string(middle)
     return '%s%s-%s' %(first, newid.file_fmt(), last)
 
 # -------------------------------- Topology classes
@@ -288,20 +291,20 @@ class FullTopo:
 
     # @classmethod
     # def remap_topology(cls, topo):
-    #     topo.isd_as = map_id(str(topo.isd_as))
+    #     topo.isd_as = map_id_string(str(topo.isd_as))
     #     for serv in (*topo.beacon_servers, *topo.certificate_servers, *topo.path_servers, *topo.sibra_servers, *topo.border_routers):
     #         serv.name = cls.remap_service_name(serv.name)
     #     # BRs contain references to other IAs
     #     for br in topo.border_routers:
     #         for k, v in br.interfaces.items():
-    #             v.isd_as = map_id(str(v.isd_as))
+    #             v.isd_as = map_id_string(str(v.isd_as))
 
     # @classmethod
     # def remap_service_name(cls, serv_name):
     #     first, middle, last = serv_name.split('-')
     #     middle = first[2:] + '-' + middle
     #     first = first[:2]
-    #     newid = map_id(middle)
+    #     newid = map_id_string(middle)
     #     return '%s%s-%s' %(first, newid.file_fmt(), last)
 
     @classmethod
@@ -332,7 +335,7 @@ class FullTopo:
 
 def test_preconditions():
     def do_test(oldvalue, expected):
-        actual = str(map_id(oldvalue))
+        actual = str(map_id_string(oldvalue))
         if actual != expected:
             raise Exception('Mapping IDs failure: %s != %s' % (actual, expected))
     do_test('1-11',   '17-ffaa:0:1101')
